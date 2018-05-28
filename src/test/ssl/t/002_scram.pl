@@ -18,10 +18,6 @@ my $number_of_tests = 6;
 # This is the hostname used to connect to the server.
 my $SERVERHOSTADDR = '127.0.0.1';
 
-# Determine whether build supports tls-server-end-point.
-my $supports_tls_server_end_point =
-  check_pg_config("#define HAVE_X509_GET_SIGNATURE_NID 1");
-
 # Allocation of base connection string shared among multiple tests.
 my $common_connstr;
 
@@ -56,22 +52,10 @@ test_connect_ok(
 	"SCRAM authentication with tls-unique as channel binding");
 test_connect_ok($common_connstr, "scram_channel_binding=''",
 	"SCRAM authentication without channel binding");
-if ($supports_tls_server_end_point)
-{
-	test_connect_ok(
-		$common_connstr,
-		"scram_channel_binding=tls-server-end-point",
-		"SCRAM authentication with tls-server-end-point as channel binding");
-}
-else
-{
-	test_connect_fails(
-		$common_connstr,
-		"scram_channel_binding=tls-server-end-point",
-		qr/channel binding type "tls-server-end-point" is not supported by this build/,
-		"SCRAM authentication with tls-server-end-point as channel binding");
-	$number_of_tests++;
-}
+test_connect_ok(
+	$common_connstr,
+	"scram_channel_binding=tls-server-end-point",
+	"SCRAM authentication with tls-server-end-point as channel binding");
 test_connect_fails(
 	$common_connstr,
 	"scram_channel_binding=not-exists",

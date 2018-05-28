@@ -389,15 +389,26 @@ pgtls_get_finished(PGconn *conn, size_t *len)
 	return result;
 }
 
+#ifndef HAVE_X509_GET_SIGNATURE_NID
+/*
+ * This function was added in OpenSSL 1.0.2, but all of the fields it accesses
+ * are public in older versions, so we can just redefine it when missing.
+ */
+static int
+X509_get_signature_nid(const X509 *x)
+{
+	return OBJ_obj2nid(x->sig_alg->algorithm);
+}
+#endif
+
 char *
 pgtls_get_peer_certificate_hash(PGconn *conn, size_t *len)
 {
-#ifdef HAVE_X509_GET_SIGNATURE_NID
 	X509	   *peer_cert;
 	const EVP_MD *algo_type;
 	unsigned char hash[EVP_MAX_MD_SIZE];	/* size for SHA-512 */
 	unsigned int hash_size;
-	int			algo_nid;
+	int			signature_nid;
 	char	   *cert_hash;
 
 	*len = 0;
@@ -411,11 +422,13 @@ pgtls_get_peer_certificate_hash(PGconn *conn, size_t *len)
 	 * Get the signature algorithm of the certificate to determine the hash
 	 * algorithm to use for the result.
 	 */
-	if (!OBJ_find_sigid_algs(X509_get_signature_nid(peer_cert),
-							 &algo_nid, NULL))
+	signature_nid = X509_get_signature_nid(peer_cert);
+	algo_type = EVP_get_digestbynid(signature_nid);
+	if (!algo_type)
 	{
 		printfPQExpBuffer(&conn->errorMessage,
-						  libpq_gettext("could not determine server certificate signature algorithm\n"));
+						  libpq_gettext("could not find digest for NID %s\n"),
+						  OBJ_nid2sn(signature_nid));
 		return NULL;
 	}
 
@@ -425,21 +438,11 @@ pgtls_get_peer_certificate_hash(PGconn *conn, size_t *len)
 	 * (https://tools.ietf.org/html/rfc5929#section-4.1).  If something else
 	 * is used, the same hash as the signature algorithm is used.
 	 */
-	switch (algo_nid)
+	switch (EVP_MD_type(algo_type))
 	{
 		case NID_md5:
 		case NID_sha1:
 			algo_type = EVP_sha256();
-			break;
-		default:
-			algo_type = EVP_get_digestbynid(algo_nid);
-			if (algo_type == NULL)
-			{
-				printfPQExpBuffer(&conn->errorMessage,
-								  libpq_gettext("could not find digest for NID %s\n"),
-								  OBJ_nid2sn(algo_nid));
-				return NULL;
-			}
 			break;
 	}
 
@@ -462,11 +465,6 @@ pgtls_get_peer_certificate_hash(PGconn *conn, size_t *len)
 	*len = hash_size;
 
 	return cert_hash;
-#else
-	printfPQExpBuffer(&conn->errorMessage,
-					  libpq_gettext("channel binding type \"tls-server-end-point\" is not supported by this build\n"));
-	return NULL;
-#endif
 }
 
 /* ------------------------------------------------------------ */

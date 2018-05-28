@@ -1123,16 +1123,26 @@ be_tls_get_peer_finished(Port *port, size_t *len)
 	return result;
 }
 
+#ifndef HAVE_X509_GET_SIGNATURE_NID
+/*
+ * This function was added in OpenSSL 1.0.2, but all of the fields it accesses
+ * are public in older versions, so we can just redefine it when missing.
+ */
+static int
+X509_get_signature_nid(const X509 *x)
+{
+	return OBJ_obj2nid(x->sig_alg->algorithm);
+}
+#endif
+
 char *
 be_tls_get_certificate_hash(Port *port, size_t *len)
 {
-#ifdef HAVE_X509_GET_SIGNATURE_NID
 	X509	   *server_cert;
 	char	   *cert_hash;
-	const EVP_MD *algo_type = NULL;
+	const EVP_MD *algo_type;
 	unsigned char hash[EVP_MAX_MD_SIZE];	/* size for SHA-512 */
 	unsigned int hash_size;
-	int			algo_nid;
 
 	*len = 0;
 	server_cert = SSL_get_certificate(port->ssl);
@@ -1143,8 +1153,8 @@ be_tls_get_certificate_hash(Port *port, size_t *len)
 	 * Get the signature algorithm of the certificate to determine the hash
 	 * algorithm to use for the result.
 	 */
-	if (!OBJ_find_sigid_algs(X509_get_signature_nid(server_cert),
-							 &algo_nid, NULL))
+	algo_type = EVP_get_digestbynid(X509_get_signature_nid(server_cert));
+	if (!algo_type)
 		elog(ERROR, "could not determine server certificate signature algorithm");
 
 	/*
@@ -1153,17 +1163,11 @@ be_tls_get_certificate_hash(Port *port, size_t *len)
 	 * (https://tools.ietf.org/html/rfc5929#section-4.1).  If something else
 	 * is used, the same hash as the signature algorithm is used.
 	 */
-	switch (algo_nid)
+	switch (EVP_MD_type(algo_type))
 	{
 		case NID_md5:
 		case NID_sha1:
 			algo_type = EVP_sha256();
-			break;
-		default:
-			algo_type = EVP_get_digestbynid(algo_nid);
-			if (algo_type == NULL)
-				elog(ERROR, "could not find digest for NID %s",
-					 OBJ_nid2sn(algo_nid));
 			break;
 	}
 
@@ -1176,12 +1180,6 @@ be_tls_get_certificate_hash(Port *port, size_t *len)
 	*len = hash_size;
 
 	return cert_hash;
-#else
-	ereport(ERROR,
-			(errcode(ERRCODE_PROTOCOL_VIOLATION),
-			 errmsg("channel binding type \"tls-server-end-point\" is not supported by this build")));
-	return NULL;
-#endif
 }
 
 /*
